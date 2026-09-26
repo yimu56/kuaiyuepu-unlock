@@ -1,0 +1,31 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.exe
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+*.log.1
+.build/
+.tmp/
+
+# 抓包文件（可能含 Cookie 与真实会话标识，务必不要提交）
+*.har
+*.pcap
+*.chls
+
+# 凭据类文件
+config.json
+token.cache
+.env
+.env.*
+*.pem
+*.key

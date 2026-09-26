@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.user.js text eol=lf
+*.md text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.exe binary
