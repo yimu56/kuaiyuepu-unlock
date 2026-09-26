@@ -1,14 +1,10 @@
 // ==UserScript==
-// @name         快乐谱 访问限制绕过（优化版）
-// @name:en      Kuaiyuepu Unlock
-// @namespace    https://github.com/yimu56/kuaiyuepu-unlock
-// @version      0.3.0
-// @description  绕过快乐谱未登录访问限制：随机 UA + 本地缓存 + 手动刷新按钮
-// @description:en  Bypass the login wall on kuaiyuepu.com with random UA, local cache and a manual refresh button.
+// @name         快乐谱访问助手
+// @namespace    https://github.com/yimu56/kuaiyuepu-access-helper
+// @version      0.4
+// @description  快乐谱未登录访问辅助：基于时间动态生成随机UA + 本地缓存 + 手动刷新
 // @author       yimu56
 // @license      MIT
-// @homepageURL  https://github.com/yimu56/kuaiyuepu-unlock
-// @supportURL   https://github.com/yimu56/kuaiyuepu-unlock/issues
 // @match        *://*.kuaiyuepu.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -17,7 +13,7 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function () {
+(function() {
     'use strict';
 
     // ==================== 配置 ====================
@@ -28,24 +24,153 @@
         showButton: true,                 // 是否显示右下角手动刷新按钮
     };
 
-    // 随机 UA 池，每次请求随机选一个，降低被固定 UA 计数的概率
-    const UA_POOL = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0',
-        'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-    ];
-
-    // ==================== 工具函数 ====================
+    // ==================== 日志 ====================
     function log(...args) {
-        console.log('[快乐谱绕过]', ...args);
+        console.log('[快乐谱助手]', ...args);
     }
 
+    // ==================== 基于时间的随机 UA 生成 ====================
+
+    // mulberry32 伪随机数生成器
+    function createSeededRandom(seed) {
+        let state = seed >>> 0;
+        return function() {
+            state |= 0;
+            state = state + 0x6D2B79F5 | 0;
+            let t = Math.imul(state ^ state >>> 15, 1 | state);
+            t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
+    }
+
+    function randInt(rand, min, max) {
+        return Math.floor(rand() * (max - min + 1)) + min;
+    }
+
+    function pickWeighted(rand, items, weights) {
+        const total = weights.reduce((a, b) => a + b, 0);
+        let r = rand() * total;
+        for (let i = 0; i < items.length; i++) {
+            r -= weights[i];
+            if (r <= 0) return items[i];
+        }
+        return items[items.length - 1];
+    }
+
+    // 生成 Windows UA
+    function generateWindowsUA(rand) {
+        const winVer = rand() > 0.15 ? 'Windows NT 10.0' : 'Windows NT 6.1';
+        const arch = rand() > 0.25 ? 'Win64; x64' : 'WOW64';
+        const browser = pickWeighted(rand, ['chrome', 'edge', 'firefox'], [0.5, 0.3, 0.2]);
+
+        if (browser === 'chrome') {
+            const v = randInt(rand, 118, 132);
+            return `Mozilla/5.0 (${winVer}; ${arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36`;
+        }
+        if (browser === 'edge') {
+            const v = randInt(rand, 118, 132);
+            return `Mozilla/5.0 (${winVer}; ${arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36 Edg/${v}.0.0.0`;
+        }
+        const v = randInt(rand, 115, 128);
+        return `Mozilla/5.0 (${winVer}; ${arch}; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
+    }
+
+    // 生成 macOS UA
+    function generateMacUA(rand) {
+        const macVer = pickWeighted(
+            rand,
+            ['10_15_7', '13_0_0', '13_6_0', '14_0_0', '14_2_0'],
+            [0.3, 0.2, 0.2, 0.15, 0.15]
+        );
+        const browser = pickWeighted(rand, ['chrome', 'safari', 'firefox'], [0.4, 0.4, 0.2]);
+
+        if (browser === 'chrome') {
+            const v = randInt(rand, 118, 132);
+            return `Mozilla/5.0 (Macintosh; Intel Mac OS X ${macVer}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36`;
+        }
+        if (browser === 'safari') {
+            const ver = randInt(rand, 16, 18);
+            const sub = randInt(rand, 0, 6);
+            const wkVer = '605.1.15';
+            return `Mozilla/5.0 (Macintosh; Intel Mac OS X ${macVer}) AppleWebKit/${wkVer} (KHTML, like Gecko) Version/${ver}.${sub} Safari/${wkVer}`;
+        }
+        const v = randInt(rand, 115, 128);
+        return `Mozilla/5.0 (Macintosh; Intel Mac OS X ${macVer}; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
+    }
+
+    // 生成 Linux UA
+    function generateLinuxUA(rand) {
+        const distro = pickWeighted(
+            rand,
+            ['X11; Linux x86_64', 'X11; Ubuntu; Linux x86_64', 'X11; Fedora; Linux x86_64'],
+            [0.5, 0.3, 0.2]
+        );
+        const browser = pickWeighted(rand, ['chrome', 'firefox'], [0.6, 0.4]);
+
+        if (browser === 'chrome') {
+            const v = randInt(rand, 118, 132);
+            return `Mozilla/5.0 (${distro}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36`;
+        }
+        const v = randInt(rand, 115, 128);
+        return `Mozilla/5.0 (${distro}; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
+    }
+
+    // 生成 Android UA
+    function generateAndroidUA(rand) {
+        const androidVer = randInt(rand, 11, 14);
+        const devices = [
+            'SM-S918B', 'SM-S928B', 'Pixel 6', 'Pixel 7', 'Pixel 8',
+            'V2118A', 'M2102J20SG', 'CPH2451', 'ONEPLUS A6013'
+        ];
+        const device = devices[randInt(rand, 0, devices.length - 1)];
+        const v = randInt(rand, 118, 132);
+        return `Mozilla/5.0 (Linux; Android ${androidVer}; ${device}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Mobile Safari/537.36`;
+    }
+
+    // 生成 iOS UA
+    function generateIOSUA(rand) {
+        const iosVer = randInt(rand, 15, 17);
+        const iosSubVer = randInt(rand, 0, 6);
+        const isIPad = rand() > 0.7;
+        const device = isIPad ? 'iPad' : 'iPhone';
+        const ver = randInt(rand, 15, 17);
+        const sub = randInt(rand, 0, 6);
+        return `Mozilla/5.0 (${device}; CPU ${isIPad ? 'OS' : 'iPhone OS'} ${iosVer}_${iosSubVer} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${ver}.${sub} Mobile/15E148 Safari/604.1`;
+    }
+
+    // 对外暴露：每次调用都基于当前时间生成一个全新 UA
     function randomUA() {
-        return UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
+        const seed = (Date.now() ^ (Math.random() * 0xFFFFFFFF)) >>> 0;
+        const rand = createSeededRandom(seed);
+
+        const os = pickWeighted(
+            rand,
+            ['windows', 'macos', 'linux', 'android', 'ios'],
+            [0.45, 0.20, 0.10, 0.15, 0.10]
+        );
+
+        let ua;
+        if (os === 'windows') ua = generateWindowsUA(rand);
+        else if (os === 'macos') ua = generateMacUA(rand);
+        else if (os === 'linux') ua = generateLinuxUA(rand);
+        else if (os === 'android') ua = generateAndroidUA(rand);
+        else ua = generateIOSUA(rand);
+
+        log('本次随机 UA:', ua);
+        return ua;
     }
 
+    // 根据 UA 推断 Client Hints
+    function getClientHintsFromUA(ua) {
+        if (ua.includes('Windows NT')) return { platform: '"Windows"', mobile: '?0' };
+        if (ua.includes('Macintosh')) return { platform: '"macOS"', mobile: '?0' };
+        if (ua.includes('Android')) return { platform: '"Android"', mobile: '?1' };
+        if (ua.includes('iPhone') || ua.includes('iPad')) return { platform: '"iOS"', mobile: '?1' };
+        if (ua.includes('Linux')) return { platform: '"Linux"', mobile: '?0' };
+        return { platform: '"Windows"', mobile: '?0' };
+    }
+
+    // ==================== URL 工具 ====================
     function getUrlParam(url, param) {
         try {
             return new URL(url).searchParams.get(param);
@@ -87,7 +212,7 @@
         const cached = GM_getValue(key, null);
         if (!cached) return null;
         if (Date.now() - cached.time > CONFIG.cacheExpire) {
-            GM_setValue(key, null); // 过期清除
+            GM_setValue(key, null);
             return null;
         }
         log('命中缓存:', url);
@@ -104,7 +229,9 @@
     function fetchOriginalPage(url) {
         return new Promise((resolve, reject) => {
             const ua = randomUA();
-            log('请求原始页面:', url, '| UA:', ua);
+            const hints = getClientHintsFromUA(ua);
+
+            log('请求原始页面:', url);
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: url,
@@ -114,10 +241,12 @@
                     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                     'Referer': 'https://www.kuaiyuepu.com/',
                     'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
+                    'Pragma': 'no-cache',
+                    'Sec-CH-UA-Mobile': hints.mobile,
+                    'Sec-CH-UA-Platform': hints.platform
                 },
                 timeout: CONFIG.timeout,
-                onload: function (response) {
+                onload: function(response) {
                     log('请求完成，状态码:', response.status);
                     if (response.status === 200 &&
                         response.responseText &&
@@ -144,7 +273,6 @@
     // ==================== 浮动刷新按钮 ====================
     function addRefreshButton(targetUrl) {
         if (!CONFIG.showButton) return;
-        // 避免重复添加
         if (document.getElementById('kuaiyuepu-refresh-btn')) return;
 
         const btn = document.createElement('div');
@@ -176,7 +304,6 @@
                 const html = await fetchOriginalPage(targetUrl);
                 setCache(targetUrl, html);
                 replacePageContent(html);
-                // 替换后重新添加按钮
                 setTimeout(() => addRefreshButton(targetUrl), 100);
             } catch (e) {
                 log('手动刷新失败:', e.message);
@@ -194,13 +321,12 @@
     async function main() {
         log('脚本已加载，当前 URL:', window.location.href);
 
-        // 如果当前已经在简谱页面且不是登录页，说明访问正常，无需处理
+        // 已在简谱页且不是登录页，说明正常访问
         if (window.location.href.includes('/jianpu/') && !isLoginPage()) {
             log('当前已是简谱页面，无需绕过');
             return;
         }
 
-        // 检测是否被重定向到登录页
         if (isLoginPage()) {
             const jumpto = getJumptoFromLoginPage();
             if (jumpto && isJianpuPage(jumpto)) {
@@ -224,11 +350,9 @@
                         setTimeout(() => addRefreshButton(jumpto), 100);
                     } catch (e) {
                         log('自动获取失败:', e.message);
-                        // 失败时也添加按钮，让用户手动重试
                         setTimeout(() => addRefreshButton(jumpto), 100);
                     }
                 } else {
-                    // 不自动获取，仅提供手动按钮
                     setTimeout(() => addRefreshButton(jumpto), 100);
                 }
             }
